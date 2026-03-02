@@ -1,0 +1,19 @@
+name: company-predictor
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pandas
+  - numpy
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - jupyter
+  - tqdm
+  - pyarrow
+  - pip
+  - pip:
+    - wrds
+    - yfinance
+    - fredapi
