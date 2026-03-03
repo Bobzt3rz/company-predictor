@@ -17,14 +17,20 @@ export WRDS_USERNAME=your_username
 export WRDS_PASSWORD=your_password
 python src/data/pull_compustat.py
 
-# 4. Compute financial ratios + targets
+# 4. Pull commodity prices (no auth needed)
+python src/data/pull_commodities.py
+
+# 5. Compute financial ratios + targets
 python src/features/compute_ratios.py
 
-# 5. Build sliding window dataset
+# 6. Build sliding window dataset (merges all channels)
 python src/features/build_windows.py
 
-# 6. Train baseline LSTM
+# 7. Train baseline LSTM
 python src/models/baseline_lstm.py
+
+# 8. Feature importance analysis
+python src/analysis/feature_importance.py
 ```
 
 ## Project Structure
@@ -32,93 +38,121 @@ python src/models/baseline_lstm.py
 ```
 company-predictor/
 ├── src/
-│   ├── schema.py                  # Central schema: all column names, ratio
-│   │                              # definitions, configs, and type definitions
-│   │                              # shared across every module
+│   ├── schema.py                  # Central schema: column names, ratio/commodity
+│   │                              # definitions, configs, channel registry metadata
 │   ├── data/
-│   │   └── pull_compustat.py      # Pull quarterly fundamentals from WRDS
-│   │                              # Compustat, apply revenue floor, filter
-│   │                              # for data quality
+│   │   ├── pull_compustat.py      # Pull quarterly fundamentals from WRDS Compustat
+│   │   └── pull_commodities.py    # Pull commodity futures from Yahoo Finance
 │   ├── features/
-│   │   ├── compute_ratios.py      # Compute Channel A financial ratios,
-│   │   │                          # winsorize, compute deltas/YoY, create targets
-│   │   └── build_windows.py       # Build sliding window datasets for sequence
-│   │                              # models. Temporal train/val/test split,
-│   │                              # z-score normalization, NaN handling
-│   └── models/
-│       └── baseline_lstm.py       # Baseline 2-layer LSTM with naive baselines,
-│                                  # training loop, early stopping, evaluation
+│   │   ├── compute_ratios.py      # Compute Channel A financial ratios
+│   │   └── build_windows.py       # Multi-channel merge, sliding windows,
+│   │                              # temporal split, z-score normalization
+│   ├── models/
+│   │   └── baseline_lstm.py       # Baseline 2-layer LSTM with naive baselines
+│   └── analysis/
+│       └── feature_importance.py  # Permutation importance analysis
 ├── data/
-│   ├── raw/                       # Raw parquet files from WRDS (git-ignored)
+│   ├── raw/                       # Raw parquet files (git-ignored)
 │   └── processed/
 │       └── windows/               # Train/val/test .npz tensors (git-ignored)
 ├── outputs/
 │   └── models/
-│       └── baseline_lstm/         # Model weights, metrics, training curves
-├── environment.yml                # Conda environment
+│       └── baseline_lstm/         # Weights, metrics, plots, importance scores
+├── environment.yml
 └── README.md
 ```
 
 ## Pipeline Overview
 
-The data flows through four stages. Each stage reads from the previous stage's output:
-
 ```
-┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  pull_compustat   │ ──→ │  compute_ratios   │ ──→ │  build_windows    │ ──→ │  baseline_lstm    │
-│                   │     │                   │     │                   │     │                   │
-│  WRDS SQL query   │     │  6 financial      │     │  Sliding window   │     │  2-layer LSTM     │
-│  Revenue floor    │     │  ratios           │     │  (8 quarters)     │     │  Naive baselines  │
-│  Quality filter   │     │  QoQ deltas       │     │  Temporal split   │     │  Early stopping   │
-│  (≥40 quarters)   │     │  YoY changes      │     │  Z-score norm     │     │  Metrics + plots  │
-│                   │     │  Winsorization     │     │  NaN drop         │     │                   │
-│  → raw/*.parquet  │     │  Targets (Δ, dir) │     │  → windows/*.npz  │     │  → model.pt       │
-│                   │     │  → ratios.parquet  │     │                   │     │  → metrics.json   │
-└──────────────────┘     └──────────────────┘     └──────────────────┘     └──────────────────┘
+┌──────────────┐     ┌──────────────┐
+│ pull_compustat│     │pull_commodit.│
+│              │     │              │
+│ WRDS SQL     │     │ Yahoo Finance│
+│ Revenue floor│     │ 15 futures   │
+│ Quality filt.│     │ QoQ % change │
+│              │     │              │
+│ → fundq.pqt  │     │ → ch_b.pqt   │
+└──────┬───────┘     └──────┬───────┘
+       │                    │
+       ▼                    │
+┌──────────────┐            │
+│compute_ratios│            │
+│              │            │
+│ 6 ratios     │            │
+│ QoQ deltas   │            │
+│ Winsorize    │            │
+│ Targets      │            │
+│              │            │
+│ → ch_a.pqt   │            │
+└──────┬───────┘            │
+       │                    │
+       ▼                    ▼
+┌─────────────────────────────┐     ┌──────────────────┐
+│       build_windows          │     │   baseline_lstm   │
+│                              │     │                   │
+│ Channel registry merges A+B  │ ──→ │ 2-layer LSTM      │
+│ Company channels: (gvkey,q)  │     │ Naive baselines   │
+│ Market channels:  (q) only   │     │ Early stopping    │
+│ Sliding window (8 quarters)  │     │ Metrics + plots   │
+│ Temporal train/val/test      │     │                   │
+│ Z-score normalization        │     │ → model.pt        │
+│                              │     │ → metrics.json    │
+│ → windows/*.npz              │     └──────────────────┘
+└─────────────────────────────┘
 ```
 
-## Schema (`src/schema.py`)
+## Channel Architecture
 
-All column names, ratio definitions, model configs, and pipeline parameters are defined centrally in `schema.py`. Every module imports from here — there are no hardcoded column strings anywhere else. Key components:
+Features are organized into channels, each producing a separate parquet file. The window builder merges them automatically based on their granularity:
 
-- **`CompustatVar`** — Enum of raw Compustat variable names (`revtq`, `cogsq`, etc.)
-- **`RatioDef` / `Ratios`** — Dataclass defining each ratio (name, label, formula, color, display format) with convenience methods like `Ratios.names()`, `Ratios.get("gross_margin")`
-- **`Targets`** — Enum of prediction target columns (`target_gm_delta`, `target_gm_direction`, etc.)
-- **`CompustatConfig`** — Data pull parameters (GICS sector, date range, revenue floor)
-- **`WindowConfig`** — Sliding window parameters (window size, train/val/test split years)
-- **`BaselineModelConfig`** — LSTM hyperparameters (hidden dim, layers, learning rate, etc.)
+| Channel | Granularity | Join Key | Features | Source |
+|---------|-------------|----------|----------|--------|
+| A — Financial Ratios | Per company | (gvkey, fyearq, fqtr) | 12 | WRDS Compustat |
+| B — Commodity Prices | Market-wide | (fyearq, fqtr) | 15 | Yahoo Finance |
+| C — SEC Filings (future) | Per company | (gvkey, fyearq, fqtr) | TBD | EDGAR |
 
-To add a new ratio, add a `RatioDef` entry to `RATIO_DEFS` in `schema.py` and it will automatically flow through compute, windowing, and visualization.
+Adding a new channel requires: (1) a feature script that outputs a parquet with `fyearq`/`fqtr` columns, (2) a `ChannelSource` entry in `build_windows.py`, and (3) schema definitions in `schema.py`.
 
-## Channel A: Financial Ratios
+### Channel A: Financial Ratios (12 features)
 
-Six ratios computed from Compustat quarterly fundamentals:
+Six ratios computed from Compustat quarterly fundamentals, each with a QoQ delta:
 
-| Ratio | Formula | Type |
-|-------|---------|------|
-| Gross Margin | (revenue - COGS) / revenue | Percentage |
-| Operating Margin | operating income / revenue | Percentage |
-| SGA / Revenue | SG&A expense / revenue | Percentage |
-| Inventory Turnover | COGS / inventory | Raw number |
-| Asset Turnover | revenue / total assets | Percentage |
-| Current Ratio | current assets / current liabilities | Raw number |
+| Ratio | Formula | + Delta |
+|-------|---------|---------|
+| Gross Margin | (revenue - COGS) / revenue | gross_margin_delta |
+| Operating Margin | operating income / revenue | operating_margin_delta |
+| SGA / Revenue | SG&A expense / revenue | sga_to_revenue_delta |
+| Inventory Turnover | COGS / inventory | inventory_turnover_delta |
+| Asset Turnover | revenue / total assets | asset_turnover_delta |
+| Current Ratio | current assets / current liabilities | current_ratio_delta |
 
-Each ratio also produces a QoQ delta and YoY change, giving 18 features total per quarter.
+### Channel B: Commodity Prices (15 features)
+
+Quarter-over-quarter percentage changes from Yahoo Finance futures:
+
+| Category | Commodities | Rationale |
+|----------|-------------|-----------|
+| Agricultural | Corn, Wheat, Soybeans, Soybean Oil, Soybean Meal, Sugar, Cocoa, Coffee, Cotton, Live Cattle | Raw material & ingredient costs |
+| Energy | Crude Oil (WTI), Natural Gas | Transport, packaging, processing |
+| Metals | Gold, Copper | Inflation proxy, packaging (cans) |
+| Macro | US Dollar Index (DXY) | FX exposure for multinationals |
 
 ## Target
 
-The model predicts **next-quarter gross margin delta** (the change in gross margin from current quarter to next quarter). This is more useful than predicting the level because margins are highly autocorrelated — a naive "predict last value" baseline gets R²=0.87 on levels but only 47% directional accuracy.
+The model predicts **next-quarter gross margin delta** (the change in gross margin from current quarter to next quarter). This is more useful than predicting the level because margins are highly autocorrelated — a naive "predict last value" baseline gets high R² on levels but only ~47% directional accuracy.
 
 ## Sliding Window Format
 
-The LSTM expects 3D tensors of shape `(batch_size, 8, 18)`:
+The LSTM expects 3D tensors of shape `(batch_size, 8, 27)`:
 
 ```
-         feat_0  feat_1  feat_2  ...  feat_17
-Q1 2020  [0.42    0.18    0.15   ...   0.02  ]
-Q2 2020  [0.41    0.17    0.14   ...  -0.01  ]
+         Ch.A (12 features)          Ch.B (15 features)
+         ratio₁ delta₁ ... ratio₆   corn  wheat ... usd
+Q1 2020  [0.42   0.01  ...  1.82    +0.03 -0.05 ... +0.01]
+Q2 2020  [0.41  -0.01  ...  1.79    +0.08 +0.02 ... -0.02]
    ...
-Q4 2021  [0.46    0.22    0.16   ...   0.03  ]
+Q4 2021  [0.46   0.02  ...  1.91    -0.04 +0.01 ... +0.03]
 
 Target: GM delta for Q1 2022
 ```
@@ -128,31 +162,50 @@ Windows are split temporally (no data leakage):
 - **Val**: 2019–2021
 - **Test**: 2022+
 
-Features are z-score normalized using training set statistics only.
+Features are z-score normalized using training set statistics only. Channel slice indices are saved in metadata for future channel-aware models.
 
-## Current Results (Baseline LSTM)
+## Current Results
+
+### Baseline LSTM (Channel A + B, h=256)
 
 | Model | MAE | RMSE | R² | Dir Acc | Dir Acc (sig) |
 |-------|-----|------|----|---------|---------------|
-| Global Mean Delta | 0.0304 | 0.0670 | -0.0004 | 46.8% | 46.9% |
-| Zero Delta (Random Walk) | 0.0304 | 0.0670 | -0.0002 | 46.8% | 46.9% |
-| Last Delta (Momentum) | 0.0513 | 0.1126 | -1.8231 | 42.1% | 39.4% |
-| **LSTM (Channel A)** | **0.0279** | **0.0561** | **0.2996** | **60.0%** | **61.7%** |
+| Global Mean Delta | 0.0306 | 0.0675 | -0.0003 | 46.9% | 47.1% |
+| Zero Delta (Random Walk) | 0.0306 | 0.0675 | -0.0002 | 46.9% | 47.1% |
+| Last Delta (Momentum) | 0.0518 | 0.1134 | -1.8254 | 42.0% | 39.3% |
+| **LSTM (A+B, h=256)** | **0.0284** | **0.0571** | **0.2830** | **59.2%** | **62.7%** |
 
 **Key metrics**:
-- **MAE**: Average magnitude of prediction error (in GM percentage points)
-- **R²**: Fraction of variance in actual deltas explained by the model (0.30 = 30%)
-- **Dir Acc**: Did we correctly predict expand vs. compress?
-- **Dir Acc (sig)**: Same but only for quarters with |Δ| ≥ 0.5pp (filters out noise)
+- **Dir Acc**: Did we correctly predict margin expand vs. compress? (59.2% vs ~47% baselines)
+- **Dir Acc (sig)**: Same but only for quarters with |Δ| ≥ 0.5pp (62.7%, filters out noise)
+- **R²**: Fraction of variance in actual deltas explained (0.28 = 28%)
 
-The LSTM achieves 60% directional accuracy vs. ~47% for all naive baselines, correctly predicting margin direction on significant moves 62% of the time.
+### Feature Importance (Permutation)
+
+Top features by accuracy drop when shuffled (256h model, test set):
+
+| Rank | Feature | Acc Drop | Channel |
+|------|---------|----------|---------|
+| 1 | gross_margin_delta | +7.1% | A |
+| 2 | gross_margin | +3.0% | A |
+| 3 | operating_margin | +1.7% | A |
+| 4 | sga_to_revenue | +1.3% | A |
+| 5 | crude_oil_qoq | +1.2% | B |
+| 6 | inventory_turnover_delta | +1.0% | A |
+| 7 | wheat_qoq | +0.9% | B |
+| 8 | cocoa_qoq | +0.7% | B |
+| 9 | coffee_qoq | +0.6% | B |
+| 10 | current_ratio | +0.5% | A |
+
+Channel A financial ratios drive most of the signal, with crude oil, wheat, cocoa, and coffee as the most impactful commodity features. Several commodity features (sugar, natural gas, soybean meal) show near-zero or slightly negative importance, suggesting the model doesn't benefit from them in their current form.
 
 ## Data Stats
 
-- **265 companies** (Consumer Staples, GICS 30)
-- **18,750 company-quarters** (2004–2024)
-- **12,977 clean sliding windows** after NaN removal
-- **Train/Val/Test**: 8,782 / 2,159 / 2,036 windows
+- **266 companies** (Consumer Staples, GICS 30)
+- **~19,000 company-quarters** (2003–2026)
+- **~14,000 clean sliding windows** after NaN removal
+- **Train/Val/Test**: ~9,600 / ~2,200 / ~2,050 windows
+- **15 commodity futures** (2003–2026, daily → quarterly)
 
 ## Build Plan
 
@@ -161,11 +214,13 @@ The LSTM achieves 60% directional accuracy vs. ~47% for all naive baselines, cor
 | 1 | Data pull + Channel A ratios | ✅ Done |
 | 2 | Sliding window dataset builder | ✅ Done |
 | 3 | Baseline LSTM (Channel A only) | ✅ Done (60% dir acc) |
-| 4 | Channel B: Commodity price features | ⬜ Next |
-| 5 | Channel C: SEC filing text features (NLP) | ⬜ |
+| 4 | Channel B: Commodity price features | ✅ Done (15 futures, Yahoo Finance) |
+| 4b | Multi-channel window builder | ✅ Done (registry pattern) |
+| 4c | Feature importance analysis | ✅ Done (permutation importance) |
+| 5 | Channel C: SEC filing text features (NLP) | ⬜ Next |
 | 6 | Multimodal fusion model | ⬜ |
 | 7 | Evaluation, ablation, & interpretability | ⬜ |
 
 ## Environment
 
-Requires Python 3.11, WRDS account for data access, and CUDA GPU recommended for training. See `environment.yml` for full dependency list.
+Requires Python 3.11, WRDS account for Compustat data, and CUDA GPU recommended for training. See `environment.yml` for full dependency list. Commodity data from Yahoo Finance requires no authentication.
