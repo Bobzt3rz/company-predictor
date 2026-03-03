@@ -184,6 +184,225 @@ class Ratios:
 
 
 # ---------------------------------------------------------------------------
+# Commodity series (Channel B)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CommodityDef:
+    """Definition of a single commodity series for Channel B."""
+    yf_ticker: str         # Yahoo Finance futures ticker
+    name: str              # Short column name (used in features)
+    label: str             # Human-readable display label
+    unit: str              # Unit of measurement
+    category: str          # 'agricultural', 'energy', or 'macro'
+    color: str = "#64748b"
+
+    @property
+    def log_name(self) -> str:
+        """Log-transformed level feature name."""
+        return f"{self.name}_log"
+
+    @property
+    def qoq_name(self) -> str:
+        """Quarter-over-quarter percentage change feature name."""
+        return f"{self.name}_qoq"
+
+    @property
+    def yoy_name(self) -> str:
+        """Year-over-year percentage change feature name."""
+        return f"{self.name}_yoy"
+
+
+# Master list of Channel B commodity series.
+# Selected for relevance to Consumer Staples (GICS 30):
+#   Agricultural → raw material / ingredient costs
+#   Energy       → transport, packaging, processing costs
+#   Macro        → FX exposure for multinationals
+#
+# All sourced from Yahoo Finance rolling front-month futures (daily, no auth).
+COMMODITY_DEFS: tuple[CommodityDef, ...] = (
+    # --- Agricultural ---
+    CommodityDef(
+        yf_ticker="ZC=F",
+        name="corn",
+        label="Corn Futures",
+        unit="cents/bushel",
+        category="agricultural",
+        color="#f59e0b",
+    ),
+    CommodityDef(
+        yf_ticker="ZW=F",
+        name="wheat",
+        label="Wheat Futures",
+        unit="cents/bushel",
+        category="agricultural",
+        color="#d97706",
+    ),
+    CommodityDef(
+        yf_ticker="ZS=F",
+        name="soybeans",
+        label="Soybean Futures",
+        unit="cents/bushel",
+        category="agricultural",
+        color="#65a30d",
+    ),
+    CommodityDef(
+        yf_ticker="ZL=F",
+        name="soybean_oil",
+        label="Soybean Oil Futures",
+        unit="cents/lb",
+        category="agricultural",
+        color="#84cc16",
+    ),
+    CommodityDef(
+        yf_ticker="ZM=F",
+        name="soybean_meal",
+        label="Soybean Meal Futures",
+        unit="USD/short ton",
+        category="agricultural",
+        color="#a3e635",
+    ),
+    CommodityDef(
+        yf_ticker="SB=F",
+        name="sugar",
+        label="Sugar #11 Futures",
+        unit="cents/lb",
+        category="agricultural",
+        color="#ec4899",
+    ),
+    CommodityDef(
+        yf_ticker="CC=F",
+        name="cocoa",
+        label="Cocoa Futures",
+        unit="USD/metric ton",
+        category="agricultural",
+        color="#92400e",
+    ),
+    CommodityDef(
+        yf_ticker="KC=F",
+        name="coffee",
+        label="Coffee C Futures",
+        unit="cents/lb",
+        category="agricultural",
+        color="#78350f",
+    ),
+    CommodityDef(
+        yf_ticker="CT=F",
+        name="cotton",
+        label="Cotton #2 Futures",
+        unit="cents/lb",
+        category="agricultural",
+        color="#e879f9",
+    ),
+    CommodityDef(
+        yf_ticker="LE=F",
+        name="live_cattle",
+        label="Live Cattle Futures",
+        unit="cents/lb",
+        category="agricultural",
+        color="#dc2626",
+    ),
+    # --- Energy ---
+    CommodityDef(
+        yf_ticker="CL=F",
+        name="crude_oil",
+        label="Crude Oil WTI Futures",
+        unit="USD/barrel",
+        category="energy",
+        color="#1e293b",
+    ),
+    CommodityDef(
+        yf_ticker="NG=F",
+        name="natural_gas",
+        label="Natural Gas Futures",
+        unit="USD/MMBtu",
+        category="energy",
+        color="#0ea5e9",
+    ),
+    # --- Metals ---
+    CommodityDef(
+        yf_ticker="GC=F",
+        name="gold",
+        label="Gold Futures",
+        unit="USD/troy oz",
+        category="metals",
+        color="#eab308",
+    ),
+    CommodityDef(
+        yf_ticker="HG=F",
+        name="copper",
+        label="Copper Futures",
+        unit="USD/lb",
+        category="metals",
+        color="#f97316",
+    ),
+    # --- Macro ---
+    CommodityDef(
+        yf_ticker="DX-Y.NYB",
+        name="usd_index",
+        label="US Dollar Index (DXY)",
+        unit="Index",
+        category="macro",
+        color="#6366f1",
+    ),
+)
+
+
+class Commodities:
+    """Convenience accessors for commodity definitions (mirrors Ratios API)."""
+
+    _by_name: dict[str, CommodityDef] = {c.name: c for c in COMMODITY_DEFS}
+
+    @classmethod
+    def get(cls, name: str) -> CommodityDef:
+        return cls._by_name[name]
+
+    @classmethod
+    def all(cls) -> tuple[CommodityDef, ...]:
+        return COMMODITY_DEFS
+
+    @classmethod
+    def names(cls) -> list[str]:
+        return [c.name for c in COMMODITY_DEFS]
+
+    @classmethod
+    def yf_tickers(cls) -> list[str]:
+        return [c.yf_ticker for c in COMMODITY_DEFS]
+
+    @classmethod
+    def labels(cls) -> dict[str, str]:
+        return {c.name: c.label for c in COMMODITY_DEFS}
+
+    @classmethod
+    def colors(cls) -> dict[str, str]:
+        return {c.name: c.color for c in COMMODITY_DEFS}
+
+    @classmethod
+    def log_names(cls) -> list[str]:
+        return [c.log_name for c in COMMODITY_DEFS]
+
+    @classmethod
+    def qoq_names(cls) -> list[str]:
+        return [c.qoq_name for c in COMMODITY_DEFS]
+
+    @classmethod
+    def yoy_names(cls) -> list[str]:
+        return [c.yoy_name for c in COMMODITY_DEFS]
+
+    @classmethod
+    def by_category(cls, category: str) -> list[CommodityDef]:
+        return [c for c in COMMODITY_DEFS if c.category == category]
+
+    @classmethod
+    def feature_names(cls) -> list[str]:
+        """All Channel B feature columns (log + qoq + yoy per commodity)."""
+        cols = []
+        for c in COMMODITY_DEFS:
+            cols.extend([c.log_name, c.qoq_name, c.yoy_name])
+        return cols
+
+
+# ---------------------------------------------------------------------------
 # Target definitions
 # ---------------------------------------------------------------------------
 
@@ -205,7 +424,7 @@ class Targets(str, Enum):
 class Channel(str, Enum):
     """Model input channels."""
     A_RATIOS = "channel_a"      # Financial ratios
-    B_COMMODITIES = "channel_b"  # Commodity prices (future)
+    B_COMMODITIES = "channel_b"  # Commodity prices
     C_TEXT = "channel_c"         # SEC filing text features (future)
 
 
@@ -218,7 +437,7 @@ class CompustatConfig:
     """Configuration for the Compustat data pull."""
     gics_sector: str = "30"
     start_year: int = 2004
-    end_year: int = 2024
+    end_year: int = 2026
     min_quarters: int = 40
     min_revenue: float = 1.0  # minimum quarterly revenue ($M) to keep
 
@@ -251,7 +470,7 @@ class WindowConfig:
 class BaselineModelConfig:
     """Configuration for the baseline LSTM model."""
     # Architecture
-    hidden_dim: int = 64
+    hidden_dim: int = 256
     num_layers: int = 2
     dropout: float = 0.2
     bidirectional: bool = False
@@ -273,9 +492,24 @@ class BaselineModelConfig:
 # Convenience: column group builders
 # ---------------------------------------------------------------------------
 
-def feature_columns() -> list[str]:
-    """All feature columns (ratios + deltas + yoy) — excludes IDs and targets."""
-    return Ratios.names() + Ratios.delta_names() + Ratios.yoy_names()
+def feature_columns(channels: tuple[str, ...] = ("a",)) -> list[str]:
+    """
+    All feature columns for the requested channels.
+
+    Args:
+        channels: Tuple of channel letters to include.
+            "a" — Channel A financial ratios (18 features)
+            "b" — Channel B commodity prices (24 features)
+
+    Returns:
+        List of column names.
+    """
+    cols = []
+    if "a" in channels:
+        cols += Ratios.names() + Ratios.delta_names() + Ratios.yoy_names()
+    if "b" in channels:
+        cols += Commodities.feature_names()
+    return cols
 
 
 def id_columns() -> list[str]:
@@ -283,6 +517,6 @@ def id_columns() -> list[str]:
     return ["gvkey", "datadate", "fyearq", "fqtr"]
 
 
-def all_columns() -> list[str]:
-    """All columns in the processed Channel A dataset."""
-    return id_columns() + feature_columns() + Targets.all()
+def all_columns(channels: tuple[str, ...] = ("a",)) -> list[str]:
+    """All columns in the processed dataset for the given channels."""
+    return id_columns() + feature_columns(channels) + Targets.all()
