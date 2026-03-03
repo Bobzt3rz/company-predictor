@@ -91,7 +91,7 @@ CHANNEL_REGISTRY: tuple[ChannelSource, ...] = (
     ChannelSource(
         name="a",
         parquet_path=PROC_DIR / "channel_a_ratios.parquet",
-        feature_names=Ratios.names() + Ratios.delta_names() + Ratios.yoy_names(),
+        feature_names=Ratios.names() + Ratios.delta_names(),
         granularity="company",
     ),
     ChannelSource(

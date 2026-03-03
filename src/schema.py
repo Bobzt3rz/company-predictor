@@ -198,19 +198,9 @@ class CommodityDef:
     color: str = "#64748b"
 
     @property
-    def log_name(self) -> str:
-        """Log-transformed level feature name."""
-        return f"{self.name}_log"
-
-    @property
     def qoq_name(self) -> str:
         """Quarter-over-quarter percentage change feature name."""
         return f"{self.name}_qoq"
-
-    @property
-    def yoy_name(self) -> str:
-        """Year-over-year percentage change feature name."""
-        return f"{self.name}_yoy"
 
 
 # Master list of Channel B commodity series.
@@ -378,16 +368,8 @@ class Commodities:
         return {c.name: c.color for c in COMMODITY_DEFS}
 
     @classmethod
-    def log_names(cls) -> list[str]:
-        return [c.log_name for c in COMMODITY_DEFS]
-
-    @classmethod
     def qoq_names(cls) -> list[str]:
         return [c.qoq_name for c in COMMODITY_DEFS]
-
-    @classmethod
-    def yoy_names(cls) -> list[str]:
-        return [c.yoy_name for c in COMMODITY_DEFS]
 
     @classmethod
     def by_category(cls, category: str) -> list[CommodityDef]:
@@ -395,11 +377,8 @@ class Commodities:
 
     @classmethod
     def feature_names(cls) -> list[str]:
-        """All Channel B feature columns (log + qoq + yoy per commodity)."""
-        cols = []
-        for c in COMMODITY_DEFS:
-            cols.extend([c.log_name, c.qoq_name, c.yoy_name])
-        return cols
+        """All Channel B feature columns (qoq per commodity)."""
+        return [c.qoq_name for c in COMMODITY_DEFS]
 
 
 # ---------------------------------------------------------------------------
@@ -498,15 +477,15 @@ def feature_columns(channels: tuple[str, ...] = ("a",)) -> list[str]:
 
     Args:
         channels: Tuple of channel letters to include.
-            "a" — Channel A financial ratios (18 features)
-            "b" — Channel B commodity prices (24 features)
+            "a" — Channel A financial ratios (levels + QoQ deltas)
+            "b" — Channel B commodity prices (QoQ % changes)
 
     Returns:
         List of column names.
     """
     cols = []
     if "a" in channels:
-        cols += Ratios.names() + Ratios.delta_names() + Ratios.yoy_names()
+        cols += Ratios.names() + Ratios.delta_names()
     if "b" in channels:
         cols += Commodities.feature_names()
     return cols
